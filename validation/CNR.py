@@ -8,13 +8,14 @@ from os.path import join as pjoin
 from nilearn.glm.first_level import make_first_level_design_matrix
 from had_utils import save2cifti, roi_mask
 
-
 # define path
 # make sure the dataset_path are modified based on your personal dataset downloading directory
 dataset_path = '/nfs/z1/userhome/ZhouMing/workingdir/BIN/data_upload/HAD'
 ciftify_path = f'{dataset_path}/derivatives/ciftify'
 nifti_path = f'{dataset_path}'
 support_path = './support_files'
+result_path = './results'
+save_indiv_path = pjoin(result_path, 'brain_map_individual')
 # change to path of current file
 os.chdir(os.path.dirname(__file__))
 
@@ -26,8 +27,11 @@ frame_times = np.arange(n_tr*3) * tr
 sess_name = 'ses-action01'
 n_sub = len(sub_names)
 alpha = 0.1
+# template for saving dtseries
+temp = nib.load(pjoin(support_path, 'template.dtseries.nii'))
 
-cnr_path = pjoin(support_path, 'cnr.dtseries.nii')
+# for alpha in alphas:
+cnr_path = pjoin(result_path, f'cnr.dtseries.nii')
 if not os.path.exists(cnr_path):
     cnr_sum = np.zeros((n_sub, n_cycle, 59412))
     for sub_idx, sub_name in enumerate(sub_names):
@@ -87,13 +91,24 @@ if not os.path.exists(cnr_path):
             # get residual from model
             time_series_predicted = np.dot(design_matrix.values, reg.coef_.transpose(1, 0))
             residual = dtseries_cycle[:, :59412] - time_series_predicted
-            # compute CNR: A/𝜎_𝑁
+            # compute CNR: A/?_?
             sigma_noise = residual.std(axis=0)
             amplitude = beta.mean(axis=0)
             cnr_sum[sub_idx, cycle_idx] = amplitude/sigma_noise
-            print('Finish performing CNR in %s %s model %02d' %(sub_name, sess_name, cycle_idx+1))
+            print('Finish performing CNR in %s %s model %02d in alpha %.6f' %(sub_name, sess_name, cycle_idx+1, alpha))
+        # save individual cnr
+        cnr_individual = np.zeros((91282))
+        cnr_individual[:59412] = cnr_sum[sub_idx].mean(axis=0)
+        tmp_path = pjoin(save_indiv_path, f'{sub_name}_cnr.dtseries.nii')
+        save2cifti(file_path=tmp_path, data=cnr_individual, brain_models=temp)
+    # compute coefficient of variation in CNR
+    cnr_cv = np.zeros((91282))
+    cnr_sub = cnr_sum.mean(axis=1)
+    for voxel_idx in range(59412):
+        cnr_voxel = cnr_sub[:, voxel_idx]
+        cnr_cv[voxel_idx] = cnr_voxel.std()/cnr_voxel.mean()
+    save2cifti(file_path=pjoin(result_path, 'cnr_cv.dtseries.nii'), data=cnr_cv, brain_models=temp)
     # save cnr
-    temp = nib.load(pjoin(support_path, 'template.dtseries.nii'))
     cnr_map = np.zeros((91282))
     cnr_sum = cnr_sum.mean(axis=(0, 1))
     cnr_map[:59412] = cnr_sum
@@ -116,3 +131,15 @@ roi_index = sio.loadmat(pjoin(support_path, 'MMP_mpmLR32k.mat'))['glasser_MMP'] 
 visual_area_mask = roi_mask(visual_area, roi_all_names, roi_index)
 cnr_visual_area = cnr_sum[visual_area_mask]
 print('CNR Mean value across the visual area: %.2f'%(cnr_visual_area.mean()))
+
+# compute individual cnr value across the whole brain and visual area cortex
+cnr_whole_brain_indiv, cnr_visual_area_indiv = np.zeros((30)), np.zeros((30))
+for sub_idx, sub_name in enumerate(sub_names):
+    tmp_path = pjoin(save_indiv_path, f'{sub_name}_cnr.dtseries.nii')
+    cnr_individual = nib.load(tmp_path).get_fdata()
+    cnr_individual = np.array(cnr_individual).squeeze()[:59412]
+    # compute individual specific values
+    cnr_whole_brain_indiv[sub_idx] = cnr_individual.mean()
+    cnr_visual_area_indiv[sub_idx] = cnr_individual[visual_area_mask].mean()
+    print('CNR value in %s: whole brain: %.2f; visual area: %.2f'%(sub_name, 
+            cnr_individual.mean(), cnr_individual[visual_area_mask].mean()))
